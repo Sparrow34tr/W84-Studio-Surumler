@@ -1,5 +1,5 @@
 # Aşamalı dağıtım (27.11.2026). Yayinla.ps1 yeni sürümü ön sürüm olarak yükler; önce yalnız yayıncının bilgisayarı alır.
-# Bu iş saatte bir ön sürümlere bakar ve uygun olanı herkese açar (Deniz'in bilgisayarı o zaman günceller):
+# Bu iş 20 dakikada bir ön sürümlere bakar ve uygun olanı herkese açar (Deniz'in bilgisayarı o zaman günceller):
 #  - Sunucu bağlıysa (W84_SUNUCU değişkeni): sürüm yayıncıda en az BEKLE_SAAT saattir çalışıyor ve o sürümde yeni,
 #    çözülmemiş hata yok. Kötü işaretli sürüm hiç açılmaz. Yayıncı sürümü hiç açmadıysa YEDEK_SAAT sonra açılır.
 #  - Sunucuya ulaşılamazsa: yalnız süre (YEDEK_SAAT).
@@ -8,7 +8,9 @@ name: Herkese aç
 
 on:
   schedule:
-    - cron: '23 * * * *'
+    # 28.11.2026: saatlik zamanlama 27.11'de 22 saatte yalnız 2 kez çalıştı (GitHub zamanlanmış işleri yükte atlar).
+    # Deniz 24 saat sonra açılan sürümü bu yüzden geç alıyordu. Sık deneme atlanan çalışmaları telafi eder; dakika ücretsiz.
+    - cron: '7,27,47 * * * *'
   workflow_dispatch:
     inputs:
       surum:
