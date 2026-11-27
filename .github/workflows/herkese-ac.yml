@@ -1,0 +1,78 @@
+# Aşamalı dağıtım (27.11.2026). Yayinla.ps1 yeni sürümü ön sürüm olarak yükler; önce yalnız yayıncının bilgisayarı alır.
+# Bu iş saatte bir ön sürümlere bakar ve uygun olanı herkese açar (Deniz'in bilgisayarı o zaman günceller):
+#  - Sunucu bağlıysa (W84_SUNUCU değişkeni): sürüm yayıncıda en az BEKLE_SAAT saattir çalışıyor ve o sürümde yeni,
+#    çözülmemiş hata yok. Kötü işaretli sürüm hiç açılmaz. Yayıncı sürümü hiç açmadıysa YEDEK_SAAT sonra açılır.
+#  - Sunucuya ulaşılamazsa: yalnız süre (YEDEK_SAAT).
+# Genel depoda Actions dakikası ücretsiz. Elle çalıştırmak: Actions → Herkese aç → Run workflow.
+name: Herkese aç
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+    inputs:
+      surum:
+        description: 'Hemen herkese açılacak sürüm (ör. v1.20261127.1530); boşsa kurallar uygulanır'
+        required: false
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: herkese-ac
+
+env:
+  BEKLE_SAAT: 3
+  YEDEK_SAAT: 24
+
+jobs:
+  ac:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ön sürümleri değerlendir
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SUNUCU: ${{ vars.W84_SUNUCU }}
+          ELLE: ${{ inputs.surum }}
+        run: |
+          set -euo pipefail
+          ac() { gh api -X PATCH "repos/$REPO/releases/$1" -F prerelease=false -f make_latest=true > /dev/null; echo "✅ $2 herkese açıldı ($3)." | tee -a "$GITHUB_STEP_SUMMARY"; }
+          rels=$(gh api "repos/$REPO/releases?per_page=50")
+          if [ -n "${ELLE:-}" ]; then
+            id=$(echo "$rels" | jq -r --arg t "$ELLE" '.[] | select(.tag_name == $t and .prerelease) | .id')
+            [ -z "$id" ] && { echo "$ELLE ön sürüm değil ya da yok."; exit 1; }
+            ac "$id" "$ELLE" "elle"; exit 0
+          fi
+          # Sürüm numarası 1.yyyyMMdd.HHmm: sayı olarak karşılaştırmak için 14 haneye çevrilir.
+          num() { local v="${1#v}"; local d="${v#*.}"; local day="${d%%.*}"; local hm="${d#*.}"; printf '%s%04d' "$day" "$((10#$hm))"; }
+          son=$(echo "$rels" | jq -r '[.[] | select(.prerelease == false and .draft == false) | .tag_name][0] // ""')
+          sonNum=0; [ -n "$son" ] && sonNum=$(num "$son")
+          token=""
+          if [ -n "${SUNUCU:-}" ]; then
+            token=$(curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=w84-esitleme" | jq -r .value || true)
+          fi
+          now=$(date -u +%s)
+          echo "$rels" | jq -c '[.[] | select(.prerelease and (.draft | not))] | sort_by(.published_at) | .[]' | while read -r r; do
+            id=$(echo "$r" | jq -r .id); tag=$(echo "$r" | jq -r .tag_name)
+            yas=$(( (now - $(date -u -d "$(echo "$r" | jq -r .published_at)" +%s)) / 3600 ))
+            if [ "$(num "$tag")" -le "$sonNum" ]; then echo "$tag: daha yeni sürüm zaten herkeste; atlandı."; continue; fi
+            durum=""
+            if [ -n "$token" ] && [ "$token" != "null" ]; then
+              durum=$(curl -sf -H "Authorization: GitHub $token" "$SUNUCU/v1/surum-durumu/${tag#v}" || true)
+            fi
+            if [ -z "$durum" ]; then
+              if [ "$yas" -ge "$YEDEK_SAAT" ]; then ac "$id" "$tag" "sunucu yok, $yas saattir ön sürüm"; else echo "$tag: $yas saat (sunucu yok; $YEDEK_SAAT saatte açılır)."; fi
+              continue
+            fi
+            bad=$(echo "$durum" | jq -r '.bad // false'); yeni=$(echo "$durum" | jq -r '.errors.new // 0'); ilk=$(echo "$durum" | jq -r '.firstSeen // ""')
+            if [ "$bad" = "true" ]; then echo "⛔ $tag kötü işaretli; açılmaz." | tee -a "$GITHUB_STEP_SUMMARY"; continue; fi
+            if [ "$yeni" -gt 0 ]; then echo "⏸️ $tag: $yeni yeni hata; bekliyor." | tee -a "$GITHUB_STEP_SUMMARY"; continue; fi
+            if [ -n "$ilk" ]; then
+              calisma=$(( (now - $(date -u -d "$ilk" +%s)) / 3600 ))
+              if [ "$calisma" -ge "$BEKLE_SAAT" ]; then ac "$id" "$tag" "$calisma saattir yayıncıda, yeni hata yok"; else echo "$tag: yayıncıda $calisma saat; $BEKLE_SAAT saatte açılır."; fi
+            elif [ "$yas" -ge "$YEDEK_SAAT" ]; then ac "$id" "$tag" "yayıncı açmadı, $yas saat, hata yok"
+            else echo "$tag: yayıncı henüz açmadı ($yas saat)."; fi
+          done
